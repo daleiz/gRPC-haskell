@@ -92,8 +92,13 @@ forkServer Server{..} f = do
       -- subsequent deadlock in stopServer. We can use a dead-list instead if we
       -- need something more performant.
       ready <- newTVarIO False
-      tid   <- let act = do atomically (check =<< readTVar ready)
+      tid   <- let act = do 
+                            tid <- myThreadId
+                            putStrLn $ "enter handler action, tid: " <> show tid  
+                            atomically (check =<< readTVar ready)
+                            putStrLn "ready to run f" 
                             f
+                            putStrLn "run f done" 
                in forkFinally act cleanup
       atomically $ do
         modifyTVar' outstandingForks (S.insert tid)
@@ -105,6 +110,7 @@ forkServer Server{..} f = do
       return True
       where cleanup _ = do
               tid <- myThreadId
+              putStrLn $ "cleanup forkserver tid: " <> show tid
               atomically $ modifyTVar' outstandingForks (S.delete tid)
 
 -- | Configuration for SSL.

@@ -3,6 +3,7 @@
 
 module Network.GRPC.LowLevel.Server.Unregistered where
 
+import           Control.Concurrent (myThreadId)
 import           Control.Exception                                  (bracket, finally, mask)
 import           Control.Monad
 import           Control.Monad.Trans.Except
@@ -49,11 +50,20 @@ withServerCallAsync :: Server
                     -> IO ()
 withServerCallAsync s f = mask $ \unmask ->
   unmask (serverCreateCall s) >>= \case
-    Left e -> do grpcDebug $ "withServerCallAsync: call error: " ++ show e
-                 return ()
-    Right c -> do wasForkSuccess <- forkServer s handler
+    Left e -> do 
+                tid <- myThreadId
+                putStrLn $ "#####GRPC#####  tid: " <> show tid <> ", withServerCallAsync error: " <> show e
+                grpcDebug $ "withServerCallAsync: call error: " ++ show e
+                return ()
+    Right c -> do 
+                  tid <- myThreadId
+                  putStrLn $ 
+                    "#####GRPC##### tid: " <> show tid <> 
+                      ", withServerCallAsync done, serverCall: " <> show (callMethod c)
+                  wasForkSuccess <- forkServer s handler
+                  putStrLn $ "forkSuccess: " ++ show wasForkSuccess
                   unless wasForkSuccess destroy
-                where handler = unmask (f c) `finally` destroy
+                where handler = unmask (putStrLn "before fc" >> f c) `finally` destroy
                       -- TODO: We sometimes never finish cleanup if the server
                       -- is shutting down and calls killThread. This causes gRPC
                       -- core to complain about leaks.  I think the cause of
@@ -88,6 +98,7 @@ serverHandleNormalCall' :: Server
                         -> IO (Either GRPCIOError ())
 serverHandleNormalCall'
   _ sc@ServerCall{ unsafeSC = c, callCQ = cq, .. } initMeta f = do
+      putStrLn "serverHandleNormalCall(U): starting batch."
       grpcDebug "serverHandleNormalCall(U): starting batch."
       runOps c cq
         [ OpSendInitialMetadata initMeta
@@ -95,9 +106,13 @@ serverHandleNormalCall'
         ]
         >>= \case
           Left x -> do
+            putStrLn "serverHandleNormalCall(U): ops failed; aborting"
             grpcDebug "serverHandleNormalCall(U): ops failed; aborting"
             return $ Left x
           Right [OpRecvMessageResult (Just body)] -> do
+            putStrLn $ "got client metadata: " ++ show metadata
+            putStrLn $ "call_details host is: " ++ show callHost
+            putStrLn $ "call_method is: " ++ show callMethod
             grpcDebug $ "got client metadata: " ++ show metadata
             grpcDebug $ "call_details host is: " ++ show callHost
             (rsp, trailMeta, st, ds) <- f sc body

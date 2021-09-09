@@ -218,20 +218,27 @@ runOps call cq ops =
     withOpArrayAndCtxts ops $ \(opArray, contexts) -> mask_ $ do
       grpcDebug $ "runOps: allocated op contexts: " ++ show contexts
       tag <- newTag cq
+      putStrLn $ "runOps: tag: " ++ show tag
       grpcDebug $ "runOps: tag: " ++ show tag
       callError <- startBatch cq call opArray l tag
+      putStrLn $ "runOps: called start_batch. callError: "
+                   ++ (show callError)
       grpcDebug $ "runOps: called start_batch. callError: "
                    ++ (show callError)
       case callError of
         Left x -> return $ Left x
-        Right () -> do
-          ev <- pluck cq tag Nothing
+        Right () -> tryPluck cq tag contexts
+  where
+    tryPluck cq tag contexts = do
+          ev <- pluck cq tag (Just 1) 
+          putStrLn $ "runOps: pluck returned " ++ show ev
           grpcDebug $ "runOps: pluck returned " ++ show ev
           case ev of
             Right () -> do
               grpcDebug "runOps: got good op; starting."
               fmap (Right . catMaybes) $ mapM resultFromOpContext contexts
-            Left err -> return $ Left err
+            Left GRPCIOTimeout -> tryPluck cq tag contexts 
+            Left err -> return $ Left err 
 
 runOps' :: C.Call
         -> CompletionQueue

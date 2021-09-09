@@ -105,6 +105,7 @@ withPermission op cq act = bracket acquire release $ \gotResource ->
 pluck :: CompletionQueue -> C.Tag -> Maybe TimeoutSeconds
          -> IO (Either GRPCIOError ())
 pluck cq@CompletionQueue{..} tag mwait = do
+  putStrLn $ "pluck: called with tag=" ++ show tag ++ ",mwait=" ++ show mwait
   grpcDebug $ "pluck: called with tag=" ++ show tag ++ ",mwait=" ++ show mwait
   withPermission Pluck cq $ pluck' cq tag mwait
 
