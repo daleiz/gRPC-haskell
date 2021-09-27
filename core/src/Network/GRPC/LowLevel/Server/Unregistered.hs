@@ -8,6 +8,8 @@ import           Control.Monad
 import           Control.Monad.Trans.Except
 import           Data.ByteString                                    (ByteString)
 import           Network.GRPC.LowLevel.Call.Unregistered
+import           Network.GRPC.LowLevel.CompletionQueue              (withCompletionQueue,
+                                                                     CompletionQueue)
 import           Network.GRPC.LowLevel.CompletionQueue.Unregistered (serverRequestCall)
 import           Network.GRPC.LowLevel.GRPC
 import           Network.GRPC.LowLevel.Op
@@ -22,17 +24,24 @@ import           Network.GRPC.LowLevel.Server                       (Server (..)
 import qualified Network.GRPC.Unsafe.Op                             as C
 
 serverCreateCall :: Server
+                 -> CompletionQueue
                  -> IO (Either GRPCIOError ServerCall)
 serverCreateCall Server{..} =
-  serverRequestCall unsafeServer serverCQ serverCallCQ
+  serverRequestCall unsafeServer serverCQ 
 
 withServerCall :: Server
                -> (ServerCall -> IO (Either GRPCIOError a))
                -> IO (Either GRPCIOError a)
-withServerCall s f =
-  bracket (serverCreateCall s) cleanup $ \case
-    Left e -> return (Left e)
-    Right c -> f c
+withServerCall s@Server{..} f =
+  withCompletionQueue
+    serverGRPC
+    (
+      \newCQ ->
+        bracket (serverCreateCall s newCQ) cleanup $ \case
+          Left e -> return (Left e)
+          Right c -> f c
+    )
+  -- withServerCall  
   where
     cleanup (Left _) = pure ()
     cleanup (Right c) = do
@@ -47,8 +56,8 @@ withServerCall s f =
 withServerCallAsync :: Server
                     -> (ServerCall -> IO ())
                     -> IO ()
-withServerCallAsync s f = mask $ \unmask ->
-  unmask (serverCreateCall s) >>= \case
+withServerCallAsync s@Server{..} f = mask $ \unmask ->
+  unmask $ withCompletionQueue serverGRPC $ \cq -> serverCreateCall s cq >>= \case
     Left e -> do grpcDebug $ "withServerCallAsync: call error: " ++ show e
                  return ()
     Right c -> do wasForkSuccess <- forkServer s handler
