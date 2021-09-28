@@ -55,7 +55,7 @@ import qualified Network.GRPC.Unsafe.Time                       as C
 
 withCompletionQueue :: GRPC -> (CompletionQueue -> IO a) -> IO a
 withCompletionQueue grpc = bracket (createCompletionQueue grpc)
-                                   shutdownCompletionQueue
+                                   (\cq -> putStrLn "ready to shutdown cq" >> shutdownCompletionQueue cq)
 
 createCompletionQueue :: GRPC -> IO CompletionQueue
 createCompletionQueue _ = do

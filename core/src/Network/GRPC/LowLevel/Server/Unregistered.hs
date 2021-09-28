@@ -10,6 +10,10 @@ import           Control.Monad.Trans.Except
 import           Data.ByteString                                    (ByteString)
 import           Network.GRPC.LowLevel.Call.Unregistered
 import           Network.GRPC.LowLevel.CompletionQueue.Unregistered (serverRequestCall)
+import           Network.GRPC.LowLevel.CompletionQueue              (withCompletionQueue,
+                                                                     createCompletionQueue,
+                                                                     shutdownCompletionQueue,
+                                                                     CompletionQueue)
 import           Network.GRPC.LowLevel.GRPC
 import           Network.GRPC.LowLevel.Op
 import           Network.GRPC.LowLevel.Server                       (Server (..),
@@ -23,17 +27,23 @@ import           Network.GRPC.LowLevel.Server                       (Server (..)
 import qualified Network.GRPC.Unsafe.Op                             as C
 
 serverCreateCall :: Server
+                 -> CompletionQueue
                  -> IO (Either GRPCIOError ServerCall)
 serverCreateCall Server{..} =
-  serverRequestCall unsafeServer serverCQ serverCallCQ
+  serverRequestCall unsafeServer serverCQ 
 
 withServerCall :: Server
                -> (ServerCall -> IO (Either GRPCIOError a))
                -> IO (Either GRPCIOError a)
-withServerCall s f =
-  bracket (serverCreateCall s) cleanup $ \case
-    Left e -> return (Left e)
-    Right c -> f c
+withServerCall s@Server{..} f =
+  withCompletionQueue
+    serverGRPC
+    (
+      \newCQ ->
+        bracket (serverCreateCall s newCQ) cleanup $ \case
+          Left e -> return (Left e)
+          Right c -> f c
+    )
   where
     cleanup (Left _) = pure ()
     cleanup (Right c) = do
@@ -48,33 +58,36 @@ withServerCall s f =
 withServerCallAsync :: Server
                     -> (ServerCall -> IO ())
                     -> IO ()
-withServerCallAsync s f = mask $ \unmask ->
-  unmask (serverCreateCall s) >>= \case
-    Left e -> do 
-                tid <- myThreadId
-                putStrLn $ "#####GRPC#####  tid: " <> show tid <> ", withServerCallAsync error: " <> show e
-                grpcDebug $ "withServerCallAsync: call error: " ++ show e
-                return ()
-    Right c -> do 
+withServerCallAsync s@Server{..} f = mask $ \unmask ->
+  unmask $ do 
+    cq <- createCompletionQueue serverGRPC
+    serverCreateCall s cq >>= \case
+      Left e -> do 
                   tid <- myThreadId
-                  putStrLn $ 
-                    "#####GRPC##### tid: " <> show tid <> 
-                      ", withServerCallAsync done, serverCall: " <> show (callMethod c)
-                  wasForkSuccess <- forkServer s handler
-                  putStrLn $ "forkSuccess: " ++ show wasForkSuccess
-                  unless wasForkSuccess destroy
-                where handler = unmask (putStrLn "before fc" >> f c) `finally` destroy
-                      -- TODO: We sometimes never finish cleanup if the server
-                      -- is shutting down and calls killThread. This causes gRPC
-                      -- core to complain about leaks.  I think the cause of
-                      -- this is that killThread gets called after we are
-                      -- already in destroyServerCall, and wrapping
-                      -- uninterruptibleMask doesn't seem to help.  Doesn't
-                      -- crash, but does emit annoying log messages.
-                      destroy = do
-                        grpcDebug "withServerCallAsync: destroying."
-                        destroyServerCall c
-                        grpcDebug "withServerCallAsync: cleanup finished."
+                  putStrLn $ "#####GRPC#####  tid: " <> show tid <> ", withServerCallAsync error: " <> show e
+                  grpcDebug $ "withServerCallAsync: call error: " ++ show e
+                  return ()
+      Right c -> do 
+                    tid <- myThreadId
+                    putStrLn $ 
+                      "#####GRPC##### tid: " <> show tid <> 
+                        ", withServerCallAsync done, serverCall: " <> show (callMethod c)
+                    wasForkSuccess <- forkServer s handler
+                    putStrLn $ "forkSuccess: " ++ show wasForkSuccess
+                    unless wasForkSuccess destroy
+                  where handler = unmask (putStrLn "before fc" >> f c) `finally` destroy
+                        -- TODO: We sometimes never finish cleanup if the server
+                        -- is shutting down and calls killThread. This causes gRPC
+                        -- core to complain about leaks.  I think the cause of
+                        -- this is that killThread gets called after we are
+                        -- already in destroyServerCall, and wrapping
+                        -- uninterruptibleMask doesn't seem to help.  Doesn't
+                        -- crash, but does emit annoying log messages.
+                        destroy = do
+                          grpcDebug "withServerCallAsync: destroying."
+                          destroyServerCall c
+                          -- shutdownCompletionQueue cq
+                          grpcDebug "withServerCallAsync: cleanup finished."
 
 -- | A handler for an unregistered server call; bytestring arguments are the
 -- request body and response body respectively.
